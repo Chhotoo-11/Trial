@@ -1,67 +1,53 @@
 import asyncio
-from langchain.tools import Tool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_groq import ChatGroq
+from langchain_core.tools import tool
 
-# Import MCP server tools (pure functions, no LLM inside)
+# MCP server tools (pure functions)
 from rag_mcp_server import (
     get_pdf_context,
     web_search_context,
     load_url_text
 )
 
-# ----------------------- LLM -------------------------
 def get_llm():
     return ChatGroq(model_name="Gemma2-9b-It")
 
 llm = get_llm()
 
 
-# ----------------------- TOOLS -------------------------
-tools = [
-    Tool.from_function(
-        func=get_pdf_context,
-        name="get_pdf_context",
-        description=(
-            "Use this tool to fetch relevant text from a PDF. "
-            "Inputs: pdf_path (str), query (str)."
-        ),
-    ),
-    Tool.from_function(
-        func=web_search_context,
-        name="web_search_context",
-        description=(
-            "Use this tool to gather up-to-date information from "
-            "Arxiv, Wikipedia, and DuckDuckGo based on a query."
-        ),
-    ),
-    Tool.from_function(
-        func=load_url_text,
-        name="load_url_text",
-        description=(
-            "Use this tool when the user provides a URL or YouTube link. "
-            "It loads and returns the raw text content."
-        ),
-    ),
-]
+# -------------------- WRAPPED TOOLS --------------------
+
+@tool
+def pdf_tool(pdf_path: str, query: str) -> str:
+    """Fetch relevant PDF text based on user query."""
+    return get_pdf_context(pdf_path, query)
+
+@tool
+def web_search_tool(query: str) -> str:
+    """Fetch raw context from Arxiv, Wikipedia, DuckDuckGo."""
+    return web_search_context(query)
+
+@tool
+def url_loader_tool(url: str) -> str:
+    """Fetch raw text from a URL or YouTube link."""
+    return load_url_text(url)
+
+tools = [pdf_tool, web_search_tool, url_loader_tool]
 
 
-# ----------------------- PROMPT -------------------------
+# ---------------------- AGENT --------------------------
+
 prompt = ChatPromptTemplate.from_messages(
     [
-        (
-            "system",
-            "You are an intelligent AI assistant with access to tools. "
-            "Think step-by-step and decide which tool to call when needed. "
-            "After using tools, synthesize a final, clear answer."
-        ),
+        ("system",
+         "You are an intelligent agent. "
+         "Use tools when needed and then generate a final answer."),
         ("human", "{input}")
     ]
 )
 
-
-# ----------------------- AGENT -------------------------
 agent = create_tool_calling_agent(
     llm=llm,
     tools=tools,
@@ -74,8 +60,6 @@ agent_executor = AgentExecutor(
     verbose=True
 )
 
-
-# ----------------------- RUN FUNCTION -------------------------
 async def run_agent(user_input: str):
     result = await agent_executor.ainvoke({"input": user_input})
     return result["output"]

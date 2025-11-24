@@ -1,63 +1,93 @@
 import asyncio
-from langchain.agents import AgentType, initialize_agent
 from langchain_groq import ChatGroq
-from langchain.tools import Tool   # available in LC 0.1.x
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.tools import tool
 
-# MCP server tools
+# Import MCP server tools
 from rag_mcp_server import (
     get_pdf_context,
     web_search_context,
     load_url_text
 )
 
-
+# ------------ LLM -------------
 def get_llm():
     return ChatGroq(model_name="Gemma2-9b-It")
 
 llm = get_llm()
 
 
-# -------------------- TOOL WRAPPERS --------------------
-
-# Since LC old agent accepts only ONE string input,
-# We encode PDF path + query together using delimiter "|||"
-
-def pdf_wrapper(input_str: str) -> str:
-    """Input format: 'pdf_path|||question'"""
-    pdf_path, query = input_str.split("|||")
+# ------------ TOOLS -------------
+@tool
+def pdf_tool(pdf_path: str, query: str) -> str:
+    """Fetch relevant PDF context."""
     return get_pdf_context(pdf_path, query)
 
-tools = [
-    Tool(
-        name="get_pdf_context",
-        func=pdf_wrapper,
-        description="Fetch PDF context. Format: 'PDF_PATH|||QUERY'"
-    ),
-    Tool(
-        name="web_search_context",
-        func=web_search_context,
-        description="Search Arxiv, Wikipedia, and DuckDuckGo."
-    ),
-    Tool(
-        name="load_url_text",
-        func=load_url_text,
-        description="Load and return raw text from URL or YouTube link."
-    ),
-]
+@tool
+def web_tool(query: str) -> str:
+    """Web search using Arxiv, Wikipedia, DuckDuckGo."""
+    return web_search_context(query)
+
+@tool
+def url_tool(url: str) -> str:
+    """Load raw text from URL or YouTube."""
+    return load_url_text(url)
 
 
-# -------------------- AGENT --------------------
+tools = {
+    "get_pdf_context": pdf_tool,
+    "web_search_context": web_tool,
+    "load_url_text": url_tool
+}
 
-agent = initialize_agent(
-    tools=tools,
-    llm=llm,
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    verbose=True
+
+# ------------ AGENT LOGIC -------------
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system",
+     "You are an assistant with access to tools. "
+     "When needed, call a tool using this format:\n\n"
+     "<tool_name>[argument]\n\n"
+     "After receiving tool result, continue your reasoning."),
+    ("human", "{input}")
+])
+
+def call_tools(query: str):
+    """Check if input matches tool call pattern."""
+    if query.startswith("get_pdf_context"):
+        _, pdf_path, q = query.split("|||")
+        return tools["get_pdf_context"].invoke({"pdf_path": pdf_path, "query": q})
+    if query.startswith("web_search_context"):
+        return tools["web_search_context"].invoke({"query": query.replace("web_search_context ", "")})
+    if query.startswith("load_url_text"):
+        return tools["load_url_text"].invoke({"url": query.replace("load_url_text ", "")})
+    return None
+
+
+# Runnable pipeline (simple agent)
+agent = (
+    {"input": RunnablePassthrough()}
+    | prompt
+    | llm
+    | StrOutputParser()
 )
 
 
-# -------------------- RUN FUNCTION --------------------
-
 async def run_agent(user_input: str):
-    result = await agent.ainvoke(user_input)
-    return result["output"]
+    # Step 1: Ask LLM how to answer
+    action = agent.invoke(user_input)
+
+    # Step 2: Check for tool call
+    tool_result = call_tools(action)
+
+    if tool_result:
+        # Step 3: Pass tool result back to LLM
+        followup = agent.invoke(
+            f"Tool result:\n{tool_result}\n\nNow answer the question."
+        )
+        return followup
+
+    # No tool needed → direct answer
+    return action

@@ -1,72 +1,44 @@
 import asyncio
+import re
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
-from langchain_core.tools import tool
+from langchain_core.output_parsers import StrOutputParser
 
-# Import MCP server tools
+# MCP tools
 from rag_mcp_server import (
     get_pdf_context,
     web_search_context,
     load_url_text
 )
 
-# ------------ LLM -------------
+# LLM
 def get_llm():
-    return ChatGroq(model_name="llama-3.3-70b-versatile")
+    return ChatGroq(model_name="Gemma2-9b-It")
 
 llm = get_llm()
 
-
-# ------------ TOOLS -------------
-@tool
-def pdf_tool(pdf_path: str, query: str) -> str:
-    """Fetch relevant PDF context."""
-    return get_pdf_context(pdf_path, query)
-
-@tool
-def web_tool(query: str) -> str:
-    """Web search using Arxiv, Wikipedia, DuckDuckGo."""
-    return web_search_context(query)
-
-@tool
-def url_tool(url: str) -> str:
-    """Load raw text from URL or YouTube."""
-    return load_url_text(url)
-
-
-tools = {
-    "get_pdf_context": pdf_tool,
-    "web_search_context": web_tool,
-    "load_url_text": url_tool
+# TOOL MAP
+TOOLS = {
+    "get_pdf_context": get_pdf_context,
+    "web_search_context": web_search_context,
+    "load_url_text": load_url_text,
 }
 
-
-# ------------ AGENT LOGIC -------------
-
+# Prompt
 prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are an assistant with access to tools. "
-     "When needed, call a tool using this format:\n\n"
-     "<tool_name>[argument]\n\n"
-     "After receiving tool result, continue your reasoning."),
+    (
+        "system",
+        "You are a helpful assistant. "
+        "If a tool is needed, output ONLY in this exact format:\n"
+        "<tool> [arg1] [arg2]\n"
+        "Example: get_pdf_context[temp.pdf|||what is abstract]\n"
+        "Otherwise, answer directly."
+    ),
     ("human", "{input}")
 ])
 
-def call_tools(query: str):
-    """Check if input matches tool call pattern."""
-    if query.startswith("get_pdf_context"):
-        _, pdf_path, q = query.split("|||")
-        return tools["get_pdf_context"].invoke({"pdf_path": pdf_path, "query": q})
-    if query.startswith("web_search_context"):
-        return tools["web_search_context"].invoke({"query": query.replace("web_search_context ", "")})
-    if query.startswith("load_url_text"):
-        return tools["load_url_text"].invoke({"url": query.replace("load_url_text ", "")})
-    return None
-
-
-# Runnable pipeline (simple agent)
+# LLM pipeline
 agent = (
     {"input": RunnablePassthrough()}
     | prompt
@@ -74,20 +46,37 @@ agent = (
     | StrOutputParser()
 )
 
+# UTILITY — detect tool call
+TOOL_PATTERN = r"(\w+)\[(.*?)\]"
 
+def detect_tool_call(text):
+    match = re.search(TOOL_PATTERN, text)
+    if not match:
+        return None, None
+    tool_name, arg_string = match.group(1), match.group(2)
+    return tool_name, arg_string
+
+
+# MAIN EXECUTION
 async def run_agent(user_input: str):
-    # Step 1: Ask LLM how to answer
-    action = agent.invoke(user_input)
+    # Step 1: LLM decides whether to call a tool
+    model_output = agent.invoke(user_input)
 
-    # Step 2: Check for tool call
-    tool_result = call_tools(action)
+    tool_name, args = detect_tool_call(model_output)
 
-    if tool_result:
-        # Step 3: Pass tool result back to LLM
-        followup = agent.invoke(
+    if tool_name and tool_name in TOOLS:
+        # PDF calls use "path|||query"
+        if tool_name == "get_pdf_context":
+            pdf_path, query = args.split("|||")
+            tool_result = TOOLS[tool_name](pdf_path.strip(), query.strip())
+        else:
+            tool_result = TOOLS[tool_name](args.strip())
+
+        # Step 2: Send tool result back to LLM for final answer
+        final_answer = agent.invoke(
             f"Tool result:\n{tool_result}\n\nNow answer the question."
         )
-        return followup
+        return final_answer
 
-    # No tool needed → direct answer
-    return action
+    # If no tool call → return LLM response directly
+    return model_output

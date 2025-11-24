@@ -14,7 +14,7 @@ from rag_mcp_server import (
 
 # ------------ LLM -------------
 def get_llm():
-    return ChatGroq(model_name="Gemma2-9b-It")
+    return ChatGroq(model_name="llama-3.3-70b-versatile")
 
 llm = get_llm()
 

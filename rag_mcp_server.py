@@ -35,8 +35,10 @@ def get_pdf_context(pdf_path: str, query: str, k: int = 4) -> str:
     vectorstore = FAISS.from_documents(splits, embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": k})
 
-    results = retriever.get_relevant_documents(query)
-    return "\n\n".join([d.page_content for d in results])
+    # FIX: Streamlit-compatible retriever API
+    results = retriever.invoke(query)
+
+    return "\n\n".join([doc.page_content for doc in results])
 
 
 def web_search_context(query: str) -> str:

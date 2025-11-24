@@ -1,6 +1,8 @@
 import asyncio
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.agents import create_tool_calling_agent, AgentExecutor
+# from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain.agents.tool_calling import create_tool_calling_agent
+from langchain.agents import AgentExecutor
 from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 
